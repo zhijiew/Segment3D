@@ -17,6 +17,8 @@ train_collation:
   generate_masks_path: ${data.generate_masks_path}
   use_masks_th: ${data.use_masks_th}
   use_masks_score: ${data.use_masks_score}
+  point_wise_logit_threshold: 0.5 # Default, override in main stage config
+  min_points_after_filtering: 50   # Default, override in main stage config
 
 validation_collation:
   _target_: datasets.utils_stage2.VoxelizeCollate
@@ -33,6 +35,8 @@ validation_collation:
   generate_masks_path: ${data.generate_masks_path}
   use_masks_th: ${data.use_masks_th}
   use_masks_score: ${data.use_masks_score}
+  point_wise_logit_threshold: 0.5 # Default, override in main stage config
+  min_points_after_filtering: 50   # Default, override in main stage config
 
 test_collation:
   _target_: datasets.utils_stage2.VoxelizeCollate

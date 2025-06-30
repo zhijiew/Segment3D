@@ -107,6 +107,11 @@ class InstanceSegmentation(pl.LightningModule):
         # misc
         self.labels_info = dict()
 
+        # this is a buffer to store raw mask predictions (logits) before sigmoid
+        # which will be used by get_mask_and_scores and then saved in generate_masks
+        self._raw_mask_predictions_buffer = {}
+
+
         self.prepare_data()
 
     def forward(
@@ -229,14 +234,17 @@ class InstanceSegmentation(pl.LightningModule):
                         f"pred_mask/{file_name}_{real_id}.txt {pred_class} {score}\n"
                     )
 
-    def generate_masks(self, pred_masks, scores, file_names, mode):
+    def generate_masks(self, pred_masks, scores, pointwise_logits, file_names, mode):
         pred_mask_path = f"data/processed/scannet_3d_masks/{mode}/masks"
         pred_mask_score_path = f"data/processed/scannet_3d_masks/{mode}/scores"
+        pred_mask_logits_path = f"data/processed/scannet_3d_masks/{mode}/logits"
         Path(pred_mask_path).mkdir(parents=True, exist_ok=True)
         Path(pred_mask_score_path).mkdir(parents=True, exist_ok=True)
+        Path(pred_mask_logits_path).mkdir(parents=True, exist_ok=True)
         file_name = file_names
         np.save(f"{pred_mask_path}/{file_name}.npy", pred_masks.astype(bool))
         np.save(f"{pred_mask_score_path}/{file_name}.npy", scores)
+        np.save(f"{pred_mask_logits_path}/{file_name}.npy", pointwise_logits) # Save pointwise_logits
 
     def training_epoch_end(self, outputs):
         train_loss = sum([out["loss"].cpu().item() for out in outputs]) / len(
@@ -585,17 +593,22 @@ class InstanceSegmentation(pl.LightningModule):
             )
         labels_per_query = labels[topk_indices]
         topk_indices = topk_indices // num_classes
-        mask_pred = mask_pred[:, topk_indices]
+        # mask_pred here are the raw logits for mask points
+        raw_mask_pred_for_selected_queries = mask_pred[:, topk_indices]
 
-        result_pred_mask = (mask_pred > 0).float()
+        # result_pred_mask is the binary mask after thresholding logits at 0
+        result_pred_mask = (raw_mask_pred_for_selected_queries > 0).float()
 
         valid_cols = result_pred_mask.sum(0) > 0
 
         labels_per_query = labels_per_query[valid_cols]
-        mask_pred = mask_pred[:, valid_cols]
-        scores_per_query = scores_per_query[valid_cols]
+        # Filter raw_mask_pred_for_selected_queries and result_pred_mask by valid_cols
+        raw_mask_pred_for_selected_queries = raw_mask_pred_for_selected_queries[:, valid_cols]
         result_pred_mask = result_pred_mask[:, valid_cols]
-        heatmap = mask_pred.float().sigmoid()
+        scores_per_query = scores_per_query[valid_cols]
+
+        # heatmap is the sigmoid of raw logits, representing probabilities
+        heatmap = raw_mask_pred_for_selected_queries.float().sigmoid()
 
         mask_scores_per_image = (heatmap * result_pred_mask).sum(0) / (
             result_pred_mask.sum(0) + 1e-6
@@ -603,7 +616,9 @@ class InstanceSegmentation(pl.LightningModule):
         score = scores_per_query * mask_scores_per_image
         classes = labels_per_query
 
-        return score, result_pred_mask, classes, heatmap
+        # Return raw_mask_pred_for_selected_queries along with other values
+        # These raw logits will be saved for point-wise filtering later
+        return score, result_pred_mask, classes, heatmap, raw_mask_pred_for_selected_queries
 
     def eval_instance_step(
         self,
@@ -641,7 +656,8 @@ class InstanceSegmentation(pl.LightningModule):
         all_pred_classes = list()
         all_pred_masks = list()
         all_pred_scores = list()
-        all_heatmaps = list()
+        all_heatmaps = list() # Sigmoid probabilities
+        all_raw_point_logits = list() # Raw logits for points
         all_query_pos = list()
 
         offset_coords_idx = 0
@@ -703,46 +719,67 @@ class InstanceSegmentation(pl.LightningModule):
                                             ][bid, curr_query]
                                         )
 
-                    scores, masks, classes, heatmap = self.get_mask_and_scores(
+                    # Get raw_point_logits as the 5th return value
+                    scores, masks, classes, heatmap, raw_point_logits_low_res = self.get_mask_and_scores(
                         torch.stack(new_preds["pred_logits"]).cpu(),
-                        torch.stack(new_preds["pred_masks"]).T,
+                        torch.stack(new_preds["pred_masks"]).T, # These are low-res binary masks from DBSCAN
                         len(new_preds["pred_logits"]),
                         self.model.num_classes - 1,
                     )
                 else:
-                    scores, masks, classes, heatmap = self.get_mask_and_scores(
+                    # `masks` here are low-resolution raw per-point logits for each query output by the model
+                    # It's named `masks` due to historical reasons or variable reuse.
+                    low_res_query_mask_logits = masks
+                    scores, masks, classes, heatmap, raw_point_logits_low_res = self.get_mask_and_scores(
                         prediction[self.decoder_id]["pred_logits"][bid]
                         .detach()
                         .cpu(),
-                        masks,
+                        low_res_query_mask_logits, # Pass low_res_query_mask_logits (raw, before sigmoid or thresholding)
                         prediction[self.decoder_id]["pred_logits"][bid].shape[
                             0
-                        ],
-                        self.model.num_classes - 1,
+                        ], # num_queries
+                        self.model.num_classes - 1, # num_classes
                     )
+
+                # `masks` is now the binary mask (result_pred_mask from get_mask_and_scores) [low_res_points, num_selected_queries]
+                # `heatmap` is sigmoid probabilities (heatmap from get_mask_and_scores) [low_res_points, num_selected_queries]
+                # `raw_point_logits_low_res` are raw logits (raw_mask_pred_for_selected_queries from get_mask_and_scores) [low_res_points, num_selected_queries]
+
                 masks = masks.cuda()
                 heatmap = heatmap.cuda()
+                raw_point_logits_low_res = raw_point_logits_low_res.cuda()
+
                 scores = scores.sort(descending=True)
                 sort_scores_index = scores.indices
                 sort_scores_values = scores.values
+
                 classes = classes[sort_scores_index]
                 masks = masks[:, sort_scores_index]
                 heatmap = heatmap[:, sort_scores_index]
+                raw_point_logits_low_res = raw_point_logits_low_res[:, sort_scores_index]
 
                 masks = masks.cpu()
                 heatmap = heatmap.cpu()
+                raw_point_logits_low_res = raw_point_logits_low_res.cpu()
 
-                masks = self.get_full_res_mask(
-                    masks,
+
+                # Interpolate to full resolution
+                masks_full_res = self.get_full_res_mask(
+                    masks, # binary masks
                     inverse_maps[bid],
                     target_full_res[bid]["point2segment"],
                 )
-
-                heatmap = self.get_full_res_mask(
-                    heatmap,
+                heatmap_full_res = self.get_full_res_mask(
+                    heatmap, # sigmoid probabilities
                     inverse_maps[bid],
                     target_full_res[bid]["point2segment"],
                     is_heatmap=True,
+                )
+                raw_point_logits_full_res = self.get_full_res_mask(
+                    raw_point_logits_low_res, # raw logits
+                    inverse_maps[bid],
+                    target_full_res[bid]["point2segment"],
+                    is_heatmap=True, # Treat as heatmap-like for interpolation
                 )
 
                 if backbone_features is not None:
@@ -755,27 +792,36 @@ class InstanceSegmentation(pl.LightningModule):
                     backbone_features = backbone_features.numpy()
             else:
                 assert False, "not tested"
-                masks = self.get_full_res_mask(
+                # This path also needs to handle raw_point_logits if it were to be used
+                # For simplicity, assuming this path isn't critical for the current request.
+                # If it is, it would need similar logic for obtaining and interpolating raw_point_logits.
+                masks_full_res = self.get_full_res_mask(
                     prediction[self.decoder_id]["pred_masks"][bid].cpu(),
                     inverse_maps[bid],
                     target_full_res[bid]["point2segment"],
                 )
+                # Placeholder: if this path becomes active, ensure raw_point_logits_full_res is correctly populated
+                raw_point_logits_full_res = torch.zeros_like(masks_full_res)
 
-                scores, masks, classes, heatmap = self.get_mask_and_scores(
+
+                scores, masks_binary_low_res, classes, heatmap_low_res, raw_point_logits_low_res = self.get_mask_and_scores(
                     prediction[self.decoder_id]["pred_logits"][bid].cpu(),
-                    masks,
+                    masks_full_res, # This is incorrect, should be low_res logits if available
                     prediction[self.decoder_id]["pred_logits"][bid].shape[0],
                     self.model.num_classes - 1,
                     device="cpu",
                 )
+                # This part of the 'else' needs careful review if it's ever hit.
+                # For now, focusing on the primary path.
+                heatmap_full_res = heatmap_low_res # Placeholder
+                masks_full_res = masks_binary_low_res # Placeholder
 
-            masks = masks.numpy()
-            heatmap = heatmap.numpy()
 
-            all_pred_classes.append(classes)
-            all_pred_masks.append(masks)
-            all_pred_scores.append(sort_scores_values)
-            all_heatmaps.append(heatmap)
+            all_pred_classes.append(classes) # classes from top-k selection
+            all_pred_masks.append(masks_full_res.numpy()) # binary masks, full res
+            all_pred_scores.append(sort_scores_values) # scores for these instances
+            all_heatmaps.append(heatmap_full_res.numpy()) # sigmoid probabilities, full res
+            all_raw_point_logits.append(raw_point_logits_full_res.numpy()) # raw logits, full res
 
 
         for bid in range(len(prediction[self.decoder_id]["pred_masks"])):
@@ -945,10 +991,11 @@ class InstanceSegmentation(pl.LightningModule):
 
             # generate confident masks for fine-tune
             self.generate_masks(
-                self.preds[file_names[bid]]["pred_masks"],
-                self.preds[file_names[bid]]["pred_scores"],
-                file_names[bid],
-                self.config.data.validation_dataset.mode
+                pred_masks=self.preds[file_names[bid]]["pred_masks"], # binary full-res masks
+                scores=self.preds[file_names[bid]]["pred_scores"],   # instance scores
+                pointwise_logits=all_raw_point_logits[bid],          # raw full-res point logits
+                file_names=file_names[bid],
+                mode=self.config.data.validation_dataset.mode
             )
 
 

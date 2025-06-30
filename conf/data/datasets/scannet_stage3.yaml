@@ -1,0 +1,80 @@
+# @package data
+train_dataset:
+  _target_: datasets.scannet_stage2.SemanticSegmentationDataset # Can reuse stage2 dataset logic if pseudo-label format is handled by collate
+  dataset_name: "scannet"
+  # data_dir should point to the original raw dataset (e.g., scannet200)
+  # The pseudo-labels themselves are loaded via generate_masks_path in the collation function
+  data_dir: data/processed/scannet200
+  image_augmentations_path: conf/augmentation/albumentations_aug.yaml
+  volume_augmentations_path: conf/augmentation/volumentations_aug.yaml
+  label_db_filepath: data/processed/scannet200/label_database.yaml # For mapping, etc.
+  color_mean_std: data/processed/scannet200/color_mean_std.yaml
+  data_percent: 1.0
+  mode: ${data.train_mode} # from indoor_stage3.yaml
+  ignore_label: ${data.ignore_label} # from indoor_stage3.yaml
+  num_labels: ${data.num_labels} # from indoor_stage3.yaml
+  add_raw_coordinates: ${data.add_raw_coordinates} # from indoor_stage3.yaml
+  add_colors: ${data.add_colors} # from indoor_stage3.yaml
+  add_normals: ${data.add_normals} # from indoor_stage3.yaml
+  add_instance: ${data.add_instance} # from indoor_stage3.yaml
+  instance_oversampling: 0.0
+  place_around_existing: false
+  point_per_cut: 0
+  max_cut_region: 0
+  flip_in_center: false
+  noise_rate: 0
+  resample_points: 0
+  add_unlabeled_pc: false
+  cropping: ${data.cropping} # from indoor_stage3.yaml
+  cropping_args: ${data.cropping_args} # from indoor_stage3.yaml
+  is_tta: false
+  crop_min_size: ${data.crop_min_size} # from indoor_stage3.yaml
+  crop_length: ${data.crop_length} # from indoor_stage3.yaml
+  filter_out_classes: [] # Define if any classes should be excluded for Stage 3
+  label_offset: 0
+
+validation_dataset:
+  _target_: datasets.scannet_stage2.SemanticSegmentationDataset # Standard validation
+  dataset_name: "scannet"
+  data_dir: data/processed/scannet200
+  image_augmentations_path: null
+  volume_augmentations_path: null
+  label_db_filepath: data/processed/scannet200/label_database.yaml
+  color_mean_std: data/processed/scannet200/color_mean_std.yaml
+  data_percent: 1.0
+  mode: ${data.validation_mode} # from indoor_stage3.yaml
+  ignore_label: ${data.ignore_label} # from indoor_stage3.yaml
+  num_labels: ${data.num_labels} # from indoor_stage3.yaml
+  add_raw_coordinates: ${data.add_raw_coordinates} # from indoor_stage3.yaml
+  add_colors: ${data.add_colors} # from indoor_stage3.yaml
+  add_normals: ${data.add_normals} # from indoor_stage3.yaml
+  add_instance: ${data.add_instance} # from indoor_stage3.yaml
+  cropping: false
+  is_tta: false
+  crop_min_size: ${data.crop_min_size} # from indoor_stage3.yaml
+  crop_length: ${data.crop_length} # from indoor_stage3.yaml
+  filter_out_classes: []
+  label_offset: 0
+
+test_dataset:
+  _target_: datasets.scannet_stage2.SemanticSegmentationDataset # Standard test
+  dataset_name: "scannet"
+  data_dir: data/processed/scannet200
+  image_augmentations_path: null
+  volume_augmentations_path: null
+  label_db_filepath: data/processed/scannet200/label_database.yaml
+  color_mean_std: data/processed/scannet200/color_mean_std.yaml
+  data_percent: 1.0
+  mode: ${data.test_mode} # from indoor_stage3.yaml
+  ignore_label: ${data.ignore_label} # from indoor_stage3.yaml
+  num_labels: ${data.num_labels} # from indoor_stage3.yaml
+  add_raw_coordinates: ${data.add_raw_coordinates} # from indoor_stage3.yaml
+  add_colors: ${data.add_colors} # from indoor_stage3.yaml
+  add_normals: ${data.add_normals} # from indoor_stage3.yaml
+  add_instance: ${data.add_instance} # from indoor_stage3.yaml
+  cropping: false
+  is_tta: false
+  crop_min_size: ${data.crop_min_size} # from indoor_stage3.yaml
+  crop_length: ${data.crop_length} # from indoor_stage3.yaml
+  filter_out_classes: []
+  label_offset: 0

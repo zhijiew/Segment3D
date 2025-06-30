@@ -1,0 +1,59 @@
+general:
+  train_mode: true
+  task: "instance_segmentation"
+  seed: null # Can be set for reproducibility for a specific stage
+  checkpoint: null # Should point to Stage 2's output checkpoint, e.g., "saved/STAGE2_EXPERIMENT_NAME/last-epoch.ckpt"
+  backbone_checkpoint: null
+  freeze_backbone: false
+  linear_probing_backbone: false
+  train_on_segments: false
+  eval_on_segments: false
+  filter_out_instances: false
+  save_visualizations: false
+  visualization_point_size: 20
+  decoder_id: -1
+  export: false
+  use_dbscan: false
+  ignore_class_threshold: 100
+  project_name: scannet
+  workspace: jonasschult # Or your workspace
+  experiment_name: STAGE3_EXPERIMENT # Changed experiment name
+  num_targets: 19 # This might need adjustment if classes change, but likely not for class-agnostic
+  add_instance: true # Relevant for data loading if instances are handled
+  dbscan_eps: 0.95
+  dbscan_min_points: 1
+
+  export_threshold: 0.0001
+  reps_per_epoch: 1
+  on_crops: false
+  scores_threshold: 0.0
+  iou_threshold: 1.0
+  area: 5
+  eval_inner_core: -1 # disabled
+  topk_per_image: 100 # From mask generation, how many candidate instances were kept
+  ignore_mask_idx: []
+  max_batch_size: 99999999
+  save_dir: saved/${general.experiment_name} # Save dir updated to new experiment name
+  gpus: 1 # Set according to available resources
+
+defaults:
+  - data: indoor_stage3 # We might need a new data config file or override paths here
+  - data/data_loaders: simple_loader
+  - data/datasets: scannet_stage3 # Points to a new dataset config for stage 3 pseudo-labels
+  - data/collation_functions: voxelize_collate_stage3 # Points to a new collation config for stage 3
+  - logging: full
+  - model: mask3d
+  - metrics: miou
+  - optimizer: adamw
+  - scheduler: onecyclelr # Or a different scheduler for later stages
+  - trainer: trainer_stage3 # Could be trainer_stage2 if no changes, or a new one
+  - callbacks: callbacks_instance_segmentation
+  - matcher: hungarian_matcher
+  - loss: set_criterion
+
+hydra:
+  run:
+    dir: saved/hydra_logs/stage3/${now:%Y-%m-%d}/${now:%H-%M-%S} # Log dir specific to stage3
+  sweep:
+    dir: saved/hydra_logs/stage3/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}_${hydra.job.id}
